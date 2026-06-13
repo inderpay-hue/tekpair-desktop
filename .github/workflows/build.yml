@@ -9,6 +9,10 @@ on:
     tags: ["v*"]
   workflow_dispatch: {}
 
+# Necesario para que la acción de Release pueda crear/publicar la Release en tags.
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
