@@ -5,12 +5,22 @@
 //   - list_printers() -> ["EPSON TM-T20", "POS-80", "Brother QL-800", ...]
 //   - print_raw(printer, data) -> envía esos bytes tal cual a la impresora (ESC/POS,
 //     ZPL, EPL... lenguaje de etiquetas/tickets). Silencioso, usa el driver del sistema.
+//   - print_label(printer, png, w_mm, h_mm, copies) -> imprime una etiqueta como
+//     imagen en silencio (la web la renderiza a PNG con html2canvas).
 //
-// Windows: winspool (RAW). macOS/Linux: CUPS vía `lp -o raw` y `lpstat`.
-//
-// NOTA: las etiquetas HTML actuales de TekPair se imprimen con el diálogo del
-// navegador. La impresión HTML *silenciosa* (render -> PDF -> impresora) es la
-// fase 2 y se añadirá como comando print_pdf().
+// Windows: winspool (RAW) + `mspaint /pt` (imagen). macOS/Linux: CUPS (`lp`, `lpstat`).
+
+// Escribe bytes a un archivo temporal único y devuelve su ruta. Sin dependencias de
+// aleatoriedad: usa el PID + un contador atómico para el nombre.
+use std::sync::atomic::{AtomicU64, Ordering};
+static _TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn write_temp(prefix: &str, ext: &str, data: &[u8]) -> Result<std::path::PathBuf, String> {
+    let n = _TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!("{}_{}_{}.{}", prefix, std::process::id(), n, ext));
+    std::fs::write(&path, data).map_err(|e| format!("No se pudo escribir temporal: {}", e))?;
+    Ok(path)
+}
 
 // ───────────────────────── Windows: impresión RAW vía winspool ─────────────────────────
 #[cfg(windows)]
@@ -99,6 +109,28 @@ mod printing {
         }
     }
 
+    // Imprime una imagen PNG (una etiqueta) en silencio. Usa `mspaint /pt`, que envía
+    // la imagen a la impresora indicada sin diálogo, usando el tamaño de papel que
+    // tenga configurado el driver de esa impresora (en etiquetadoras = la etiqueta).
+    // width_mm/height_mm se ignoran aquí (los aplica el driver); se respetan en macOS.
+    pub fn print_label(printer: &str, png: &[u8], _width_mm: f64, _height_mm: f64, copies: u32) -> Result<(), String> {
+        use std::process::Command;
+        let path = super::write_temp("tklabel", "png", png)?;
+        let mut last_err = String::new();
+        for _ in 0..copies.max(1) {
+            let st = Command::new("mspaint")
+                .args(["/pt", &path.to_string_lossy(), printer])
+                .status();
+            match st {
+                Ok(s) if s.success() => {}
+                Ok(s) => last_err = format!("mspaint salió con código {:?}", s.code()),
+                Err(e) => last_err = format!("No se pudo lanzar mspaint: {}", e),
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+        if last_err.is_empty() { Ok(()) } else { Err(last_err) }
+    }
+
     pub fn list_printers() -> Vec<String> {
         unsafe {
             let flags: DWORD = 0x2 | 0x4; // PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS
@@ -132,6 +164,23 @@ mod printing {
 mod printing {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    use super::write_temp;
+
+    // Imprime una imagen PNG (una etiqueta) en silencio a tamaño exacto en mm vía CUPS.
+    pub fn print_label(printer: &str, png: &[u8], width_mm: f64, height_mm: f64, copies: u32) -> Result<(), String> {
+        let path = write_temp("tklabel", "png", png)?;
+        let media = format!("Custom.{:.1}x{:.1}mm", width_mm, height_mm);
+        let n = copies.max(1).to_string();
+        let out = Command::new("lp")
+            .args(["-d", printer, "-n", &n, "-o", &format!("media={}", media), "-o", "fit-to-page", path.to_str().unwrap_or("")])
+            .output()
+            .map_err(|e| format!("No se pudo lanzar lp: {}", e))?;
+        let _ = std::fs::remove_file(&path);
+        if !out.status.success() {
+            return Err(format!("lp devolvió error: {}", String::from_utf8_lossy(&out.stderr)));
+        }
+        Ok(())
+    }
 
     pub fn print_raw(printer: &str, data: &[u8]) -> Result<(), String> {
         // `lp -d <printer> -o raw` envía los bytes sin procesar (ESC/POS, ZPL...).
@@ -177,10 +226,15 @@ fn print_raw(printer: String, data: Vec<u8>) -> Result<(), String> {
     printing::print_raw(&printer, &data)
 }
 
+#[tauri::command]
+fn print_label(printer: String, data: Vec<u8>, width_mm: f64, height_mm: f64, copies: u32) -> Result<(), String> {
+    printing::print_label(&printer, &data, width_mm, height_mm, copies)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_printers, print_raw])
+        .invoke_handler(tauri::generate_handler![list_printers, print_raw, print_label])
         .run(tauri::generate_context!())
         .expect("error al arrancar TekPair");
 }
