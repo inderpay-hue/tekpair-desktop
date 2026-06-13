@@ -1,0 +1,8 @@
+node_modules/
+# Artefactos de compilación de Rust/Tauri
+src-tauri/target/
+src-tauri/gen/
+# Iconos generados por `tauri icon` (se regeneran en CI desde app-icon.png)
+src-tauri/icons/
+# SO
+.DS_Store

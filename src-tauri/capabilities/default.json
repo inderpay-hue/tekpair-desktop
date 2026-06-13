@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permite que la web remota de TekPair (tekpair.tech) use el IPC nativo para imprimir.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://www.tekpair.tech/*", "https://tekpair.tech/*", "https://*.tekpair.tech/*"]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}
