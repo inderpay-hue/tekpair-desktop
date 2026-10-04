@@ -1,0 +1,21 @@
+# Tauri 2 no deja que la web llame a un comando de la app solo porque exista y este
+# registrado en generate_handler: la capability tiene que concederlo, y con mas razon
+# aqui, donde la ventana carga contenido REMOTO (www.tekpair.tech).
+#
+# Sin este fichero "core:default" cubre los comandos del nucleo pero no los nuestros,
+# y la app respondia "Command list_printers not allowed by ACL": el selector de
+# impresora salia vacio ("no se detectaron impresoras"), no se podia elegir ninguna
+# y todo volvia al dialogo de impresion del navegador, que es justo lo que la app de
+# escritorio existe para evitar.
+#
+# OJO: cualquier comando nuevo que se añada a generate_handler! hay que añadirlo
+# tambien aqui, o fallara solo dentro de la app y no en desarrollo.
+
+[[permission]]
+identifier = "impresion-nativa"
+description = "Permite a la web de TekPair listar las impresoras instaladas en el equipo e imprimir sin dialogo (tickets, etiquetas y ESC/POS en crudo)."
+commands.allow = [
+    "list_printers",
+    "print_raw",
+    "print_label"
+]
