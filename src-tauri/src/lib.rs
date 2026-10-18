@@ -231,10 +231,82 @@ fn print_label(printer: String, data: Vec<u8>, width_mm: f64, height_mm: f64, co
     printing::print_label(&printer, &data, width_mm, height_mm, copies)
 }
 
+// ───────────────────────── Enlaces de fuera (WhatsApp, webs, email) ─────────────────────────
+// La ventana carga la web de TekPair; un window.open a wa.me no abre nada dentro de la
+// app. La web llama a este comando y el enlace se abre en el navegador / WhatsApp del
+// sistema. Solo esquemas conocidos: nada de file:// ni rutas locales.
+#[tauri::command]
+fn abrir_externo(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let u = url.trim().to_string();
+    let l = u.to_lowercase();
+    let permitido = ["https://", "http://", "mailto:", "tel:", "whatsapp:"].iter().any(|p| l.starts_with(p));
+    if !permitido {
+        return Err("Enlace no permitido".into());
+    }
+    app.opener().open_url(u, None::<&str>).map_err(|e| e.to_string())
+}
+
+// ───────────────────────── Actualización automática ─────────────────────────
+// Al abrir, mira la última versión publicada en GitHub (latest.json, firmada con la
+// clave de TekPair). Si hay una nueva, PREGUNTA: si están cobrando, «Más tarde» y se
+// vuelve a preguntar al abrir la app otra vez. La web (panel, TPV) no lo necesita:
+// se carga de tekpair.tech y se actualiza sola; esto es para la parte nativa.
+fn textos_actualizacion(version: &str) -> (String, String, String, String) {
+    let idioma = sys_locale::get_locale().unwrap_or_default().to_lowercase();
+    let t = match idioma.get(..2).unwrap_or("es") {
+        "en" => ("Update TekPair", "A new version of TekPair is available ({v}).\n\nIt installs in a few seconds and the app reopens by itself. If you are in the middle of something, choose «Later»: you will be asked again next time you open TekPair.", "Update now", "Later"),
+        "fr" => ("Mettre à jour TekPair", "Une nouvelle version de TekPair est disponible ({v}).\n\nElle s'installe en quelques secondes et l'application se rouvre toute seule. Si vous êtes occupé, choisissez « Plus tard » : la question vous sera reposée à la prochaine ouverture.", "Mettre à jour", "Plus tard"),
+        "it" => ("Aggiorna TekPair", "È disponibile una nuova versione di TekPair ({v}).\n\nSi installa in pochi secondi e l'app si riapre da sola. Se sei occupato, scegli «Più tardi»: te lo chiederà di nuovo la prossima volta che apri TekPair.", "Aggiorna ora", "Più tardi"),
+        "de" => ("TekPair aktualisieren", "Eine neue Version von TekPair ist verfügbar ({v}).\n\nSie ist in wenigen Sekunden installiert und die App öffnet sich von selbst wieder. Wenn du gerade beschäftigt bist, wähle „Später“: Du wirst beim nächsten Öffnen erneut gefragt.", "Jetzt aktualisieren", "Später"),
+        "pt" => ("Atualizar o TekPair", "Há uma nova versão do TekPair ({v}).\n\nInstala-se em poucos segundos e a app volta a abrir sozinha. Se estiver ocupado, escolha «Mais tarde»: será perguntado de novo na próxima vez que abrir o TekPair.", "Atualizar agora", "Mais tarde"),
+        _ => ("Actualizar TekPair", "Hay una versión nueva de TekPair ({v}).\n\nSe instala en unos segundos y la app se vuelve a abrir sola. Si estás con un cliente, pulsa «Más tarde»: te lo volverá a preguntar la próxima vez que abras TekPair.", "Actualizar ahora", "Más tarde"),
+    };
+    (t.0.to_string(), t.1.replace("{v}", version), t.2.to_string(), t.3.to_string())
+}
+
+async fn buscar_actualizacion(app: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_updater::UpdaterExt;
+
+    let Some(update) = app.updater()?.check().await? else { return Ok(()) };
+    let (titulo, mensaje, si, no) = textos_actualizacion(&update.version);
+    let app_dialogo = app.clone();
+    let instalar = tauri::async_runtime::spawn_blocking(move || {
+        app_dialogo
+            .dialog()
+            .message(mensaje)
+            .title(titulo)
+            .kind(MessageDialogKind::Info)
+            .buttons(MessageDialogButtons::OkCancelCustom(si, no))
+            .blocking_show()
+    })
+    .await
+    .unwrap_or(false);
+    if !instalar {
+        return Ok(());
+    }
+    // En Windows el instalador cierra la app, instala y la vuelve a abrir.
+    update.download_and_install(|_, _| {}, || {}).await?;
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_printers, print_raw, print_label])
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = buscar_actualizacion(handle).await {
+                    eprintln!("[tekpair] no se pudo comprobar la actualización: {e}");
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![list_printers, print_raw, print_label, abrir_externo])
         .run(tauri::generate_context!())
         .expect("error al arrancar TekPair");
 }

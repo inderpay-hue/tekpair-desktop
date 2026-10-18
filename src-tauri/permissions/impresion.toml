@@ -19,3 +19,10 @@ commands.allow = [
     "print_raw",
     "print_label"
 ]
+
+[[permission]]
+identifier = "enlaces-externos"
+description = "Permite a la web de TekPair abrir enlaces de fuera (WhatsApp, webs, email) en el navegador o la app del sistema."
+commands.allow = [
+    "abrir_externo"
+]

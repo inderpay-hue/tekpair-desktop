@@ -39,8 +39,13 @@ jobs:
       - name: Generar iconos (desde app-icon.png)
         run: tauri icon app-icon.png
 
+      # Firma la actualización (.sig) con la clave de TekPair (secretos del repo):
+      # la app solo instala actualizaciones firmadas con ella.
       - name: Build
         run: tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # Renombra el .exe a un nombre fijo para que el enlace de descarga directa
       # (releases/latest/download/TekPair-Setup.exe) no dependa de la versión.
@@ -49,16 +54,35 @@ jobs:
         run: |
           mkdir -p dist-installer
           cp src-tauri/target/release/bundle/nsis/*-setup.exe "dist-installer/TekPair-Setup.exe"
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig "dist-installer/TekPair-Setup.exe.sig"
+          # latest.json: lo que miran las apps instaladas para actualizarse solas.
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            fs.writeFileSync("dist-installer/latest.json", JSON.stringify({
+              version: v,
+              notes: "TekPair " + v,
+              pub_date: new Date().toISOString(),
+              platforms: { "windows-x86_64": {
+                signature: fs.readFileSync("dist-installer/TekPair-Setup.exe.sig", "utf8").trim(),
+                url: "https://github.com/inderpay-hue/tekpair-desktop/releases/download/v" + v + "/TekPair-Setup.exe"
+              } }
+            }, null, 2));
+          ' "$VERSION"
 
       - name: Subir instalador (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: tekpair-windows-installer
-          path: dist-installer/TekPair-Setup.exe
+          path: dist-installer/
           if-no-files-found: error
 
       - name: Publicar Release (solo en tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-installer/TekPair-Setup.exe
+          files: |
+            dist-installer/TekPair-Setup.exe
+            dist-installer/TekPair-Setup.exe.sig
+            dist-installer/latest.json
