@@ -26,3 +26,10 @@ description = "Permite a la web de TekPair abrir enlaces de fuera (WhatsApp, web
 commands.allow = [
     "abrir_externo"
 ]
+
+[[permission]]
+identifier = "ventanas"
+description = "Permite a la web de TekPair abrir o traer delante la ventana aparte del TPV y la del panel (solo esas dos y solo pantallas de tekpair.tech)."
+commands.allow = [
+    "abrir_ventana"
+]

@@ -7,6 +7,7 @@
 //     ZPL, EPL... lenguaje de etiquetas/tickets). Silencioso, usa el driver del sistema.
 //   - print_label(printer, png, w_mm, h_mm, copies) -> imprime una etiqueta como
 //     imagen en silencio (la web la renderiza a PNG con html2canvas).
+//   - abrir_ventana(cual, ruta?) -> abre o trae delante la ventana del TPV o la del panel.
 //
 // Windows: winspool (RAW) + `mspaint /pt` (imagen). macOS/Linux: CUPS (`lp`, `lpstat`).
 
@@ -247,6 +248,76 @@ fn abrir_externo(app: tauri::AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(u, None::<&str>).map_err(|e| e.to_string())
 }
 
+// ───────────────────────── Ventana aparte para el TPV ─────────────────────────
+// En el navegador, «TPV» abre el TPV en una ventana aparte (window.open con nombre fijo)
+// y el panel se queda donde estaba, para seguir con las reparaciones sin salir del TPV.
+// Aquí window.open no abre ventanas (desktop-print.js lo convierte en un visor), así que
+// la web llama a abrir_ventana:
+//   - cual = "tpv"   → ventana con etiqueta "tpv" (https://www.tekpair.tech/tpv.html).
+//   - cual = "panel" → la ventana principal ("main"), la del panel.
+// Si la ventana ya existe NO se abre otra: se trae delante aunque esté minimizada o detrás
+// de otras (unminimize + show + set_focus). Si el usuario la cerró, se crea de nuevo.
+// `ruta` (opcional) solo puede ser una pantalla de TekPair de esa ventana (tpv.html o
+// dashboard.html con su ?/#), nunca una URL cualquiera que llegue de la web.
+// Tamaño y posición de cada ventana los recuerda tauri-plugin-window-state.
+const BASE: &str = "https://www.tekpair.tech";
+
+fn ruta_valida(cual: &str, ruta: &str) -> bool {
+    let base = if cual == "tpv" { "/tpv.html" } else { "/dashboard.html" };
+    ruta == base || ruta.starts_with(&format!("{base}?")) || ruta.starts_with(&format!("{base}#"))
+}
+
+fn enfocar(w: &tauri::WebviewWindow) {
+    let _ = w.unminimize();
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+// Es async a propósito: crear una ventana desde un comando síncrono bloquea la app en Windows.
+#[tauri::command]
+async fn abrir_ventana(app: tauri::AppHandle, cual: String, ruta: Option<String>) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+    let (label, defecto, titulo) = match cual.as_str() {
+        "tpv" => ("tpv", "/tpv.html", "TekPair TPV"),
+        "panel" => ("main", "/app.html", "TekPair"),
+        _ => return Err("Ventana no permitida".into()),
+    };
+    if let Some(r) = &ruta {
+        if !ruta_valida(&cual, r) {
+            return Err("Ruta no permitida".into());
+        }
+    }
+    if let Some(w) = app.get_webview_window(label) {
+        let mut destino = ruta.clone();
+        // La ventana del TPV se fue a otra pantalla: se devuelve al TPV.
+        if destino.is_none() && label == "tpv" {
+            if let Ok(u) = w.url() {
+                if u.path() != "/tpv.html" && u.path() != "/tpv" {
+                    destino = Some(defecto.to_string());
+                }
+            }
+        }
+        if let Some(r) = destino {
+            let url: tauri::Url = format!("{BASE}{r}").parse().map_err(|e| format!("{e}"))?;
+            w.navigate(url).map_err(|e| e.to_string())?;
+        }
+        enfocar(&w);
+        return Ok(());
+    }
+    let url: tauri::Url = format!("{BASE}{}", ruta.as_deref().unwrap_or(defecto)).parse().map_err(|e| format!("{e}"))?;
+    let mut b = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url))
+        .title(titulo)
+        .inner_size(1280.0, 840.0)
+        .min_inner_size(900.0, 600.0);
+    if label == "tpv" {
+        // La web sabe que es la ventana aparte del TPV (igual que en el navegador, por su nombre).
+        b = b.initialization_script("try{window.name='tekpair-tpv'}catch(e){}");
+    }
+    let w = b.build().map_err(|e| e.to_string())?;
+    enfocar(&w);
+    Ok(())
+}
+
 // ───────────────────────── Actualización automática ─────────────────────────
 // Al abrir, mira la última versión publicada en GitHub (latest.json, firmada con la
 // clave de TekPair). Si hay una nueva, PREGUNTA: si están cobrando, «Más tarde» y se
@@ -297,6 +368,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Recuerda tamaño y posición de las ventanas (la del TPV aparte y la principal).
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -306,7 +379,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_printers, print_raw, print_label, abrir_externo])
+        .invoke_handler(tauri::generate_handler![list_printers, print_raw, print_label, abrir_externo, abrir_ventana])
         .run(tauri::generate_context!())
         .expect("error al arrancar TekPair");
 }
